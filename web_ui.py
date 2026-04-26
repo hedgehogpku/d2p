@@ -4,14 +4,21 @@ import tempfile
 import zipfile
 import shutil
 from main import process_single_file
-
+import io
 st.set_page_config(
     page_title="Deemo I/II to Phigros",
     layout="centered"
 )
 
+# 初始化 session_state
 if 'is_converting' not in st.session_state:
     st.session_state.is_converting = False
+
+# 初始化下载存储（关键：用来保存文件，刷新不丢）
+if "converted_files" not in st.session_state:
+    st.session_state.converted_files = []
+if "zip_package" not in st.session_state:
+    st.session_state.zip_package = None
 
 def load_settings():
     settings_path = os.path.join(os.path.dirname(__file__), "settings.txt")
@@ -168,11 +175,16 @@ status_placeholder = st.empty()
 
 convert_clicked = st.button("🎵 开始转换", type="primary", use_container_width=True)
 
+# ===================== 转换逻辑 =====================
 if convert_clicked and not st.session_state.is_converting:
     if not uploaded_files:
         st.error("请先选择谱面文件")
     else:
         st.session_state.is_converting = True
+        
+        # 清空旧的下载记录
+        st.session_state.converted_files = []
+        st.session_state.zip_package = None
         
         temp_output = tempfile.mkdtemp()
         
@@ -189,10 +201,7 @@ if convert_clicked and not st.session_state.is_converting:
         import uuid
 
         for idx, file in enumerate(uploaded_files):
-            # 保存原始文件名
             original_name = file.name
-            
-            # 生成随机临时文件名（保证不包含中文）
             ext = os.path.splitext(file.name)[1]
             temp_filename = f"{uuid.uuid4().hex}{ext}"
             
@@ -205,7 +214,6 @@ if convert_clicked and not st.session_state.is_converting:
                 f.write(file.getbuffer())
             
             try:
-                print(f"DEBUG: original_name = {repr(original_name)}")
                 success, msg = process_single_file(
                     zip_path=temp_path,
                     output_dir=temp_output,
@@ -227,7 +235,7 @@ if convert_clicked and not st.session_state.is_converting:
                     appear_by_judge_order=appear_order,
                     user_cover_path=cover_path,
                     enable_sound_visualization=False,
-                    original_filename=original_name  # 传递原始中文名
+                    original_filename=original_name
                 )
                 if success:
                     if isinstance(msg, list):
@@ -242,67 +250,67 @@ if convert_clicked and not st.session_state.is_converting:
                 fail_list.append(f"{original_name}: {str(e)}")
                 st.error(f"❌ {original_name} 出错: {str(e)}")
             finally:
-                try:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                except:
-                    pass
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        
         progress_placeholder.progress(1.0)
         
         if success_files:
-            temp_output = os.path.dirname(success_files[0])
-            
-            # 获取原始上传的文件名
-            original_name = None
-            if len(uploaded_files) == 1:
-                original_name = os.path.splitext(uploaded_files[0].name)[0]
-            
-            # 显示成功信息
             status_placeholder.success(f"转换完成！成功: {len(success_files)}, 失败: {len(fail_list)}")
             
-            # 逐个显示下载按钮
-            for i, fpath in enumerate(success_files):
+            # 保存所有文件到 session_state
+            for fpath in success_files:
+                fname = os.path.basename(fpath)
                 with open(fpath, 'rb') as f:
-                    file_data = f.read()
-                st.download_button(
-                    label=f"📥 下载 {os.path.basename(fpath)}",
-                    data=file_data,
-                    file_name=os.path.basename(fpath).encode('utf-8').decode('utf-8'),
-                    mime="application/octet-stream",
-                    use_container_width=True,
-                    key=f"download_{i}"
-                )
+                    fdata = f.read()
+                st.session_state.converted_files.append((fname, fdata))
             
-            # 如果文件数量大于1，额外提供打包下载选项
+            # 生成打包文件
             if len(success_files) > 1:
-                st.markdown("---")
-                st.markdown("**或者打包下载全部文件：**")
-                
-                zip_path = os.path.join(temp_output, "temp.zip")
-                with zipfile.ZipFile(zip_path, 'w') as zf:
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                     for fpath in success_files:
                         zf.write(fpath, os.path.basename(fpath))
-                with open(zip_path, 'rb') as f:
-                    zip_data = f.read()
+                zip_buffer.seek(0)
                 
-                if original_name:
-                    zip_filename = f"{original_name}_pez.zip"
+                if len(uploaded_files) == 1:
+                    base = os.path.splitext(uploaded_files[0].name)[0]
+                    zip_name = f"{base}_全部曲包.zip"
                 else:
-                    zip_filename = "converted_files_pez.zip"
+                    zip_name = "转换完成_全部曲包.zip"
                 
-                st.download_button(
-                    label=f"📦 打包下载全部 ({len(success_files)} 个文件)",
-                    data=zip_data,
-                    file_name=zip_filename,
-                    mime="application/zip",
-                    use_container_width=True,
-                    key="download_pack"
-                )
+                st.session_state.zip_package = (zip_name, zip_buffer.getvalue())
             
-  
+            shutil.rmtree(temp_output, ignore_errors=True)
         else:
             status_placeholder.error(f"转换失败！全部 {len(fail_list)} 个文件失败")
         
         st.session_state.is_converting = False
+
+# ===================== 永久显示下载按钮（核心修复） =====================
+if st.session_state.converted_files:
+    st.markdown("---")
+    st.subheader("✅ 转换完成，可下载")
+    for i, (fname, fdata) in enumerate(st.session_state.converted_files):
+        st.download_button(
+            label=f"📥 下载 {fname}",
+            data=fdata,
+            file_name=fname,
+            mime="application/octet-stream",
+            use_container_width=True,
+            key=f"perm_download_{i}"
+        )
+
+    if st.session_state.zip_package:
+        st.markdown("---")
+        zip_name, zip_data = st.session_state.zip_package
+        st.download_button(
+            label=f"📦 打包下载全部文件",
+            data=zip_data,
+            file_name=zip_name,
+            mime="application/zip",
+            use_container_width=True,
+            key="perm_zip"
+        )
 
 st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
 

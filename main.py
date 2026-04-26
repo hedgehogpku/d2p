@@ -145,18 +145,11 @@ def convert_to_ogg(mp3_path):
     return mp3_path
 
 
-# ===================== 读取 .ini 配置文件 =====================
-def load_song_ini(zip_dir):
-    ini_path = None
-    for root, dirs, files in os.walk(zip_dir):
-        for f in files:
-            if f.lower().endswith('.ini'):
-                ini_path = os.path.join(root, f)
-                break
-        if ini_path:
-            break
-
-    if not ini_path or not os.path.exists(ini_path):
+# ===================== 【修复】读取 同名 .ini =====================
+def load_matched_ini(json_path):
+    base = os.path.splitext(json_path)[0]
+    ini_path = base + ".ini"
+    if not os.path.exists(ini_path):
         return {}
 
     config = configparser.RawConfigParser(interpolation=None)
@@ -462,7 +455,7 @@ def process_single_file(zip_path, output_dir, speed,
                     results.append((f'谱面{chart_idx}', False, f'DNT处理失败: {str(e)}'))
                     continue
 
-            # ========== 处理 .json 文件 ==========
+            # ========== 【核心修复】处理 .json 文件 ==========
             else:
                 try:
                     with open(chart_path, 'r', encoding='utf-8') as f:
@@ -471,19 +464,23 @@ def process_single_file(zip_path, output_dir, speed,
                     results.append((f'谱面{chart_idx}', False, f'JSON解析失败: {chart_path}'))
                     continue
 
-                ini_config = load_song_ini(chart_dir)
+                # ===================== 【修复1】自动匹配同名INI =====================
+                ini_config = load_matched_ini(chart_path)
+                json_file_name = os.path.splitext(os.path.basename(chart_path))[0]
 
                 if custom_song and custom_song.strip():
-                    song = fix_encoding(custom_song.strip())
+                    song = custom_song.strip()
                 elif ini_config.get('song'):
-                    song = fix_encoding(ini_config['song'])
+                    song = ini_config['song']
+                elif original_filename:
+                    song = os.path.splitext(original_filename.strip())[0]
                 else:
-                    song = fix_encoding(folder_name if folder_name and folder_name != '.' else os.path.splitext(os.path.basename(chart_path))[0])
+                    song = json_file_name
 
                 if custom_hard and custom_hard.strip():
-                    hard = fix_encoding(custom_hard.strip())
+                    hard = custom_hard.strip()
                 elif ini_config.get('hard'):
-                    hard = fix_encoding(ini_config['hard'])
+                    hard = ini_config['hard']
                 else:
                     hard = "Hard"
 
@@ -491,26 +488,33 @@ def process_single_file(zip_path, output_dir, speed,
                     hard = f"<Deemo> Lv.{hard}"
 
                 if custom_composer and custom_composer.strip():
-                    composer = fix_encoding(custom_composer.strip())
+                    composer = custom_composer.strip()
                 elif ini_config.get('composer'):
-                    composer = fix_encoding(ini_config['composer'])
+                    composer = ini_config['composer']
                 else:
                     composer = "Unknown"
 
                 if custom_charter and custom_charter.strip():
-                    charter = fix_encoding(custom_charter.strip())
+                    charter = custom_charter.strip()
                 elif ini_config.get('charter'):
-                    charter = fix_encoding(ini_config['charter'])
+                    charter = ini_config['charter']
                 else:
                     charter = "Unknown"
 
-                # PEZ 文件名：用子文件夹名
+                # ===================== 【修复2】智能命名 =====================
                 if custom_filename and custom_filename.strip():
-                    safe = fix_encoding(custom_filename.strip())
+                    final_name = custom_filename.strip()
                 else:
-                    safe = fix_encoding(folder_name if folder_name and folder_name != '.' else base_name)
+                    chart_folder_name = os.path.basename(chart_dir)
+                    if chart_folder_name == os.path.basename(tmp):
+                        final_name = base_name
+                    else:
+                        # 多谱面 = 文件夹名 + JSON名
+                        final_name = f"{chart_folder_name}_{json_file_name}"
 
-                # 查找同目录的音频文件
+                final_name = fix_encoding(final_name)
+
+                # 查找同目录音频
                 audio_file = None
                 preview_file = None
                 for ext in ['.mp3', '.ogg', '.wav', '.flac']:
@@ -560,7 +564,7 @@ def process_single_file(zip_path, output_dir, speed,
                     f.write(cover_data)
 
                 phi = convert_core(
-                    json_path=chart_path,
+                    json_path=chart_data,
                     speed=speed,
                     song=song,
                     composer=composer,
@@ -587,10 +591,11 @@ def process_single_file(zip_path, output_dir, speed,
                 with open(phi_out, 'w', encoding='utf-8') as f:
                     json.dump(phi, f, ensure_ascii=False, indent=2)
 
-                pez_path = os.path.join(output_dir, f'{safe}.pez')
+                # 生成不重复文件名
+                pez_path = os.path.join(output_dir, f'{final_name}.pez')
                 idx = 1
                 while os.path.exists(pez_path):
-                    pez_path = os.path.join(output_dir, f'{safe}_{idx}.pez')
+                    pez_path = os.path.join(output_dir, f'{final_name}_{idx}.pez')
                     idx += 1
 
                 with zipfile.ZipFile(pez_path, 'w', zipfile.ZIP_DEFLATED) as zf:

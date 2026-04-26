@@ -31,7 +31,7 @@ class SoundData:
     d: float = 0.0      # duration 持续时间
     p: int = 0          # pitch 音高
     v: int = 0          # volume 音量
-    w: float = 0.0      # weight/offset 权重
+    w: float = 0.0      # offset
 
 
 # ========== 中间数据结构 ==========
@@ -58,7 +58,6 @@ class ChartConstants:
     POSITION_THRESHOLD = 2.0001
     JUDGE_AREA_BASE = 0.8
     JUDGE_AREA_MIN = 0.4
-    JUDGE_AREA_FLICK = 0.8
     CHART_TIME_MAX = 99999
     DEFAULT_WIDTH = 1.0
     DEFAULT_ALPHA = 255
@@ -90,8 +89,8 @@ def time_to_ms(time_sec: float) -> int:
     return int(time_sec * ChartConstants.MS_PER_SECOND)
 
 
-def calculate_judge_area(size: float, width_setting: int = 1) -> float:
-    base = 0.8 * (1.0 + width_setting * (size - 1)) + 0.2
+def calculate_judge_area(size: float) -> float:
+    base = 0.8 * (1.0 + (size - 1)) + 0.2
     return max(base, ChartConstants.JUDGE_AREA_MIN)
 
 
@@ -268,12 +267,19 @@ def compute_slide_flags(notes_count: int, links_data: List[Dict]) -> List[int]:
 
 
 def adjust_appear_times_by_judge_order(note_list: List[NoteData]) -> None:
-    """根据判定顺序调整出现时间"""
-    for i in range(1, len(note_list)):
-        for j in range(i):
-            if note_list[i].shouldappear < note_list[j].appeartime:
-                note_list[i].shouldappear = note_list[j].appeartime
-
+    """根据判定顺序调整出现时间：O(n) 优化版，与原逻辑100%一致"""
+    if not note_list:
+        return
+    
+    # 维护前面所有 appeartime 的最大值
+    max_prev_appear = note_list[0].appeartime
+    
+    for note in note_list[1:]:
+        if note.shouldappear < max_prev_appear:
+            note.shouldappear = max_prev_appear
+        # 更新最大值，给后面音符用
+        if note.appeartime > max_prev_appear:
+            max_prev_appear = note.appeartime
 
 def make_note_dict(
     start_time_sec: float,
@@ -315,10 +321,10 @@ def make_note_dict(
 def build_regular_notes(note_list: List[NoteData], slide_flags: List[int], config: ConvertConfig) -> List[Dict]:
     """构造普通音符和 Flick 音符"""
     notes = []
-    width_setting = 1
+
     
     for note in note_list:
-        if note.pos >= ChartConstants.POSITION_THRESHOLD:
+        if abs(note.pos) >= ChartConstants.POSITION_THRESHOLD:
             continue
         
         # 确定计算tint用的音符类型
@@ -336,8 +342,11 @@ def build_regular_notes(note_list: List[NoteData], slide_flags: List[int], confi
             tint = "#FFFFFF"
         
         position_x = ChartConstants.RANGES * note.pos / 2
-        size_val = ChartConstants.DEFAULT_WIDTH + width_setting * (note.size - 1)
-        judge_area = calculate_judge_area(note.size, width_setting)
+        size_val = ChartConstants.DEFAULT_WIDTH + (note.size - 1)
+        if note_type_str == "slide":
+            judge_area = max(calculate_judge_area(note.size),0.8)
+        else:
+            judge_area = calculate_judge_area(note.size)
         visible_time = (note.time - note.shouldappear) * (1 - int(note.is_flick))
         note_type = 1 + 3 * slide_flags[note.index]
         is_fake = int(note.is_flick and not config.flick_click)
@@ -357,7 +366,7 @@ def build_regular_notes(note_list: List[NoteData], slide_flags: List[int], confi
     
     # 额外的 Flick 层
     for note in note_list:
-        if note.pos >= ChartConstants.POSITION_THRESHOLD or not note.is_flick:
+        if (note.pos) >= ChartConstants.POSITION_THRESHOLD or not note.is_flick:
             continue
         
         position_x = ChartConstants.RANGES * note.pos / 2
@@ -373,7 +382,7 @@ def build_regular_notes(note_list: List[NoteData], slide_flags: List[int], confi
             visible_time=visible_time,
             note_type=3,
             is_fake=0,
-            judge_area=ChartConstants.JUDGE_AREA_FLICK,
+            judge_area=calculate_judge_area(note.size),
             tint="#FFFFFF"
         ))
     
@@ -389,15 +398,15 @@ def build_hold_notes(note_list: List[NoteData], config: ConvertConfig) -> tuple[
     """
     hold_bodies = []
     drag_points = []
-    width_setting = 1
+
     
     for note in note_list:
-        if note.pos >= ChartConstants.POSITION_THRESHOLD or note.withhold == 0.0:
+        if (note.pos) >= ChartConstants.POSITION_THRESHOLD or note.withhold == 0.0:
             continue
         
         position_x = ChartConstants.RANGES * note.pos / 2
-        size_val = ChartConstants.DEFAULT_WIDTH + width_setting * (note.size - 1)
-        judge_area = calculate_judge_area(note.size, width_setting)
+        size_val = ChartConstants.DEFAULT_WIDTH +  (note.size - 1)
+        judge_area = calculate_judge_area(note.size)
         visible_time = note.time - note.shouldappear
         
         # Hold 主体 - 放到主判定线
